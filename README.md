@@ -20,7 +20,7 @@ That’s it.
 The framework handles everything end-to-end.
 
 ## 📂 Project Structure
-
+```
 Test_Xuser_secure/
 │
 ├── common/                      # Shared utilities & base configuration
@@ -34,7 +34,7 @@ Test_Xuser_secure/
 ├── requirements.txt             # Python dependencies
 ├── test.sh                      # Master automation script
 └── README.md
-
+```
 
 ## ⚙️ Prerequisites
 
