@@ -19,7 +19,7 @@ That’s it.
 
 The framework handles everything end-to-end.
 
-## 📂 Project Structure
+##  Project Structure
 ```
 Test_Xuser_secure/
 │
@@ -36,10 +36,10 @@ Test_Xuser_secure/
 └── README.md
 ```
 
-## ⚙️ Prerequisites
+##  Prerequisites
 
 ```
-2️⃣ Ranger Docker Setup
+ Ranger Docker Setup
 
 You must have Ranger source code cloned locally with:
 
@@ -52,7 +52,8 @@ $HOME/cloudera_code/ranger/dev-support/ranger-docker
 If your Ranger path is different, update RANGER_DOCKER_PATH inside:
 
 test.sh
-3️⃣ Ports Required
+
+Ports Required
 
 Make sure the following ports are free:
 
@@ -64,7 +65,7 @@ Docker internal ports
 ```
 
 
-🛠 Installation Steps
+ Installation Steps
 
 1️⃣ Clone Repository
 ```
@@ -76,20 +77,20 @@ cd Test_Xuser_secure
 ```
 chmod +x test.sh
 ```
-▶️ Running Tests
-🔹 Run XUser Tests
+ Running Tests
+ Run XUser Tests
 ```
 ./test.sh xuserrest
 ```
-🔹 Run KMS Tests
+ Run KMS Tests
 ```
 ./test.sh kms
 ```
-🔹 Run Service REST Tests
+ Run Service REST Tests
 ```
 ./test.sh servicrest
 ```
-🔄 What Happens Internally?
+ What Happens Internally?
 
 When you run:
 
@@ -115,7 +116,7 @@ Stops Docker containers
 <img width="3456" height="2234" alt="image" src="https://github.com/user-attachments/assets/5b01c610-01a5-47a5-ae41-3f4a26b2edc5" />
 
 
-📊 Test Report
+Test Report
 
 After execution, open:
 
@@ -149,7 +150,7 @@ conftest.py → Base URL, headers, authentication
 
 pytest.ini → PyTest settings
 
-## 🏗 Extending the Framework
+##  Extending the Framework
 
 To add new tests:
 
