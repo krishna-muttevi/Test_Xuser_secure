@@ -1,16 +1,16 @@
-# Test_Xuser_secureThis framework automatically:
+# Test_Xuser_secure:
 
-Starts Ranger Docker stack
+A fully automated **PyTest-based REST API test framework** for validating Ranger services (XUser, KMS, Service REST).
 
-Prepares Python environment
+This framework executes end-to-end testing using a single command. It:
 
-Executes API test cases
+- Starts Ranger Docker stack
+- Prepares Python virtual environment
+- Installs dependencies
+- Executes API test cases
+- Generates HTML report
+- Stops Docker containers automatically
 
-Generates HTML report
-
-Cleans up containers
-
-All with a single command.
 
 ## Quick Start
 ./test.sh xuserrest
@@ -19,7 +19,7 @@ That’s it.
 
 The framework handles everything end-to-end.
 
-📂 Project Structure
+## 📂 Project Structure
 
 Test_Xuser_secure/
 │
@@ -35,7 +35,8 @@ Test_Xuser_secure/
 ├── test.sh                      # Master automation script
 └── README.md
 
-⚙️ Prerequisites
+
+## ⚙️ Prerequisites
 
 
 2️⃣ Ranger Docker Setup
