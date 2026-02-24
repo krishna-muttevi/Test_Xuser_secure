@@ -38,7 +38,7 @@ Test_Xuser_secure/
 
 ## ⚙️ Prerequisites
 
-
+```
 2️⃣ Ranger Docker Setup
 
 You must have Ranger source code cloned locally with:
@@ -61,20 +61,34 @@ Make sure the following ports are free:
 9292 (KMS)
 
 Docker internal ports
+```
+
 
 🛠 Installation Steps
+
 1️⃣ Clone Repository
+```
 git clone https://github.com/<your-username>/Test_Xuser_secure.git
+
 cd Test_Xuser_secure
+```
 2️⃣ Make Script Executable
+```
 chmod +x test.sh
+```
 ▶️ Running Tests
 🔹 Run XUser Tests
+```
 ./test.sh xuserrest
+```
 🔹 Run KMS Tests
+```
 ./test.sh kms
+```
 🔹 Run Service REST Tests
+```
 ./test.sh servicrest
+```
 🔄 What Happens Internally?
 
 When you run:
