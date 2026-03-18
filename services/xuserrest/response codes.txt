@@ -1,0 +1,17 @@
+Ok -> 200
+
+Created -> 201
+
+Non Authoritative info (modified proxy data)  -> 203
+
+No Content -> 204
+
+Reset Content -> 205
+
+Invalid payload → 400
+
+Non-existent resource → 404
+
+Valid request but no permission → 403
+
+Invalid credentials → 401
