@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ==============================================================================
-# CONFIGURATION — service → compose files & required containers
-# Ordered intentionally: db → base → addon (startup dependency order)
-# ==============================================================================
 
-# Load ENV
+# Load ENV — must run from PyTest-Ranger project root
 if [ -f .env ]; then
   set -o allexport
   source .env
   set +o allexport
 else
-  echo ".env file not found!"
+  echo ".env file not found! Run this script from the PyTest-Ranger project root."
   exit 1
 fi
+
+# RANGER_DB_TYPE must be set before ANY docker compose call — compose parses
+# YAMLs immediately and fails with "service not found" if this is missing
+export RANGER_DB_TYPE="${RANGER_DB_TYPE:-postgres}"
+
+# All docker compose calls must run from RANGER_DOCKER_PATH
+cd "$RANGER_DOCKER_PATH"
 
 # Sanity checks
 if ! command -v docker >/dev/null 2>&1; then
@@ -27,25 +30,22 @@ if ! docker ps >/dev/null 2>&1; then
   exit 1
 fi
 
-echo ":white_check_mark: Docker is running"
+echo " --- Docker is running ---"
 
-# ==============================================================================
-# HELPERS
-# ==============================================================================
 
 # Returns ordered compose files for a service (space-separated)
 get_compose_files() {
   case "$1" in
     xuserrest|servicerest)
-      echo "docker-compose.ranger-db.yml docker-compose.ranger.yml"
+      echo "docker-compose.ranger.yml"
       ;;
     kms)
-      echo "docker-compose.ranger-db.yml docker-compose.ranger.yml docker-compose.ranger-kms.yml"
+      echo "docker-compose.ranger.yml docker-compose.ranger-kms.yml"
       ;;
   esac
 }
 
-# Returns required containers for a service (space-separated)
+# Returns required container names for a service (these are container_name: values in compose YAMLs)
 get_required_containers() {
   case "$1" in
     xuserrest|servicerest)
@@ -57,20 +57,19 @@ get_required_containers() {
   esac
 }
 
-# Returns compose SERVICE names for a test service (used by 'docker compose up')
-# These match the keys under 'services:' in the compose YAMLs — NOT container names
+# Returns compose SERVICE keys for a service (keys under 'services:' in the YAMLs)
 get_compose_services() {
   case "$1" in
     xuserrest|servicerest)
-      echo "postgres ranger-zk ranger-solr ranger"
+      echo "ranger-db ranger-zk ranger-solr ranger"
       ;;
     kms)
-      echo "postgres ranger ranger-kms"
+      echo "ranger-db ranger ranger-kms"
       ;;
   esac
 }
 
-# Build a single "docker compose -f ... -f ..." command prefix
+# Build "docker compose -f ... -f ..." prefix from COMPOSE_FILES array
 build_compose_cmd() {
   local cmd="docker compose"
   for f in "${COMPOSE_FILES[@]}"; do
@@ -80,7 +79,6 @@ build_compose_cmd() {
 }
 
 # Order-preserving dedup into a named array — bash 3.2 compatible (macOS default)
-# Usage: dedup_into DEST_ARRAY_NAME item1 item2 ...
 dedup_into() {
   local _dest_name="$1"; shift
   local _result=()
@@ -117,7 +115,8 @@ if [[ "$GENERATE_REPORT" =~ ^[Yy]$ ]]; then
   esac
 fi
 
-# INPUT PARSING & DEDUPLICATION
+# INPUT PARSING & VALIDATION
+
 if [ $# -eq 0 ]; then
   echo "Usage: ./test.sh [kms|xuserrest|servicerest|*] [--clean]"
   exit 1
@@ -137,7 +136,8 @@ for arg in "$@"; do
   fi
 done
 
-# Validate all service names — abort on ANY unknown/typo so nothing runs partially
+# Validate — abort on ANY unknown service so nothing runs partially
+
 VALID_RAW=()
 for svc in "${RAW_SERVICES[@]}"; do
   if [[ " ${VALID_SERVICES[*]} " =~ " $svc " ]]; then
@@ -158,7 +158,7 @@ fi
 # Order-preserving dedup — e.g. "xuserrest kms xuserrest" → "xuserrest kms"
 dedup_into SERVICES "${VALID_RAW[@]}"
 
-# RESOLVE COMPOSE FILES & CONTAINERS (order-preserving dedup)
+# RESOLVE COMPOSE FILES, CONTAINERS, SERVICE KEYS
 
 ALL_COMPOSE=()
 ALL_CONTAINERS=()
@@ -177,115 +177,137 @@ dedup_into COMPOSE_FILES    "${ALL_COMPOSE[@]}"
 dedup_into CONTAINERS       "${ALL_CONTAINERS[@]}"
 dedup_into COMPOSE_SERVICES "${ALL_COMPOSE_SVCS[@]}"
 
+COMPOSE_CMD=$(build_compose_cmd)
+
 echo "=============================="
-echo "Services  : ${SERVICES[*]}"
-echo "Compose files:"
+echo "Services      : ${SERVICES[*]}"
+echo "DB type       : $RANGER_DB_TYPE"
+echo "Compose files :"
 printf "  - %s\n" "${COMPOSE_FILES[@]}"
-echo "Containers:"
+echo "Containers    :"
 printf "  - %s\n" "${CONTAINERS[@]}"
 echo "=============================="
 
-cd "$RANGER_DOCKER_PATH"
-export RANGER_DB_TYPE=postgres
+# ENVIRONMENT SETUP — clean, audit, then bring up
 
-#  Detect ZK crash (only when ZK is in scope) → full teardown
-# --remove-orphans cleans stale containers from old/different compose projects
 
-COMPOSE_CMD=$(build_compose_cmd)
-
+# If ZK exited unexpectedly the whole stack is likely corrupt; nuke and restart.
 if [[ " ${CONTAINERS[*]} " =~ " ranger-zk " ]]; then
-  ZK_STATE=$(docker inspect -f '{{.State.Status}}' ranger-zk 2>/dev/null || echo "missing")
+  ZK_STATE=$(docker inspect -f '{{.State.Status}}' ranger-zk 2>/dev/null | tr -d '[:space:]' || echo "missing")
   if [[ "$ZK_STATE" == "exited" ]]; then
-    echo "⚠️  Zookeeper crashed → full environment teardown"
-    echo " $COMPOSE_CMD down -v --remove-orphans"
-    eval "$COMPOSE_CMD down -v --remove-orphans"
+    echo "⚠️  ZooKeeper crashed → full environment teardown"
+    $COMPOSE_CMD down -v --remove-orphans
+    echo "--- Teardown complete ---"
   fi
 fi
 
-#  Pre-clean container state so compose up has a clear path
-#   paused   → unpause  (compose up cannot recover paused state)
-#   exited / created → docker rm  (stale containers from any prior compose project
-#                                   cause "container name already in use" errors;
-#                                   --remove-orphans only cleans same-project orphans)
-
+# Force-clear any container holding a name we need
+# --remove-orphans only cleans containers within the same compose project.
+# Containers from other projects (or docker run) holding the same name must be
+# removed explicitly — otherwise compose up fails with "name already in use".
 echo "Auditing container states..."
 for c in "${CONTAINERS[@]}"; do
-  state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo "missing")
+  raw=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo "missing")
+  state=$(echo "$raw" | tr -d '[:space:]')   # strip all whitespace/newlines
   case "$state" in
     running)
-      echo " $c — running"
+      echo "  $c — running ✓ (keeping)"
       ;;
     paused)
       echo "  $c — paused → unpausing"
       docker unpause "$c"
       ;;
-    exited|created)
-      echo "  $c — stopped/stale → removing so compose can recreate"
-      docker rm "$c"
+    exited|created|dead)
+      echo "  $c — stopped/stale → removing"
+      docker rm -f "$c"
       ;;
     missing)
-      echo "  $c — not found → compose will create"
+      echo "  $c — not found → will be created"
+      ;;
+    *)
+      echo "  $c — unexpected state '$state' → force removing"
+      docker rm -f "$c" 2>/dev/null || true
       ;;
   esac
 done
 
-#  Bring up only containers that are NOT already running
-#   Pairs CONTAINERS[] with COMPOSE_SERVICES[] by index (built in same loop).
-#   Running containers are skipped entirely — avoids "name already in use" errors
-#   when containers were started by a different compose project.
+# Safety net — force-remove by name before compose up
+# Docker Desktop on macOS sometimes holds name reservations in its internal
+# registry even after 'down' completes. An explicit rm -f drains that cache.
+echo "Clearing any residual name reservations..."
+for c in "${CONTAINERS[@]}"; do
+  state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null | tr -d '[:space:]' || echo "missing")
+  if [[ "$state" != "running" && "$state" != "missing" ]]; then
+    docker rm -f "$c" 2>/dev/null || true
+  fi
+done
 
+# Bring up only containers that aren't already running
 SERVICES_TO_START=()
 for i in "${!CONTAINERS[@]}"; do
   c="${CONTAINERS[$i]}"
   svc="${COMPOSE_SERVICES[$i]}"
-  state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo "missing")
+  state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null | tr -d '[:space:]' || echo "missing")
   if [[ "$state" != "running" ]]; then
     SERVICES_TO_START+=("$svc")
   fi
 done
 
 if [ ${#SERVICES_TO_START[@]} -eq 0 ]; then
-  echo "All required containers already running — skipping compose up"
+  echo "--- All required containers already running — skipping compose up ---"
 else
-  echo "$COMPOSE_CMD up -d --no-recreate --remove-orphans ${SERVICES_TO_START[*]}"
-  eval "$COMPOSE_CMD up -d --no-recreate --remove-orphans ${SERVICES_TO_START[*]}"
+  echo "Starting: ${SERVICES_TO_START[*]}"
+  $COMPOSE_CMD up -d --no-recreate --remove-orphans "${SERVICES_TO_START[@]}"
 fi
 
-# Wait for required containers (dynamic — only what's in scope)
+echo "Waiting 60s for containers to initialise..."
+sleep 60
 
-echo "⏳ Waiting for required containers to be running..."
+# Restart ZK so it picks up the KDC keytab 
+if [[ " ${CONTAINERS[*]} " =~ " ranger-zk " ]]; then
+  echo "Restarting ZooKeeper to pick up KDC keytab..."
+  docker restart ranger-zk
+  sleep 20
+fi
+
+echo "Waiting for all required containers to be running..."
 RETRIES=30
-
 for ((i=1; i<=RETRIES; i++)); do
   ALL_UP=true
-
   for c in "${CONTAINERS[@]}"; do
-    cstate=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo "missing")
+    cstate=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null | tr -d '[:space:]' || echo "missing")
     if [[ "$cstate" != "running" ]]; then
       ALL_UP=false
       break
     fi
   done
-
   if $ALL_UP; then
-    echo " All required containers are running"
+    echo "--- All required containers are running ---"
     break
   fi
-
+  if (( i == RETRIES )); then
+    echo "❌ Timed out waiting for containers. Current states:"
+    for c in "${CONTAINERS[@]}"; do
+      docker inspect -f "  $c — {{.State.Status}}" "$c" 2>/dev/null || echo "  $c — missing"
+    done
+    exit 1
+  fi
   echo "   Attempt $i/$RETRIES — retrying in 5s..."
   sleep 5
 done
 
-# Wait for Ranger REST API
 
-echo ":mag: Waiting for Ranger API (http://localhost:6080)..."
-
+echo "Waiting for Ranger API (http://localhost:6080)..."
 for i in {1..30}; do
   if curl -s --max-time 3 http://localhost:6080 >/dev/null 2>&1; then
-    echo ":white_check_mark: Ranger API is ready"
+    echo "--- Ranger API is ready ---"
     break
   fi
-  echo "  :hourglass_flowing_sand: Attempt $i/30 — retrying in 5s..."
+  if (( i == 30 )); then
+    echo "❌ Ranger API did not become ready in time"
+    exit 1
+  fi
+  echo "   Attempt $i/30 — retrying in 5s..."
   sleep 5
 done
 
@@ -299,14 +321,14 @@ export PYTHONPATH="$PROJECT_PATH"
 
 pip install -r requirements.txt --quiet
 
-# TEST PATHS  (already deduplicated SERVICES — no duplicate paths)
+# TEST PATHS
 
 TEST_PATHS=()
 for svc in "${SERVICES[@]}"; do
   TEST_PATHS+=("services/$svc")
 done
 
-# REPORTS
+# REPORTS — clean up stale files before run
 
 REPORT_NAME="report_$(IFS=_; echo "${SERVICES[*]}").html"
 READ_REPORT="report_read_$(IFS=_; echo "${SERVICES[*]}").html"
@@ -314,28 +336,21 @@ WRITE_REPORT="report_write_$(IFS=_; echo "${SERVICES[*]}").html"
 
 rm -f "$REPORT_NAME" "$READ_REPORT" "$WRITE_REPORT"
 
-# ==============================================================================
-# RUN TESTS
-# ==============================================================================
-
-# Wrapper so test failures (pytest exit code 1) do NOT abort the whole script.
+# Wrapper so test failures don't abort the whole script
 run_pytest() { pytest "$@" || true; }
 
-# ── SINGLE combined report ─────────────────────────────────────────────────────
-# pytest-html has no append mode — the only way to produce ONE file covering
-# all services is a single pytest invocation with all paths passed together.
-# The xuserrest parallel-GET split is skipped in this mode (one report trumps
-# parallelism when the user explicitly asked for a combined view).
+# RUN TESTS
+
 if [[ "$REPORT_MODE" == "single" ]]; then
   echo "======================================"
-  echo "🚀 Running: ${SERVICES[*]}"
+  echo "   Running: ${SERVICES[*]}"
   echo "   Combined report → $REPORT_NAME"
   echo "======================================"
   run_pytest -vs "${TEST_PATHS[@]}" \
     --html="$REPORT_NAME" --self-contained-html
 
 else
-  # ── none / separate: per-service loop with hybrid strategy for xuserrest ─────
+  # Per-service loop 
   run_tests_for_service() {
     local service_root="$1"
     local service_name
@@ -343,13 +358,11 @@ else
     local service_path="$service_root/tests"
 
     echo "======================================"
-    echo " Running tests for $service_name"
+    echo " Running tests for: $service_name"
     echo "======================================"
 
     if [[ "$service_name" == "xuserrest" ]]; then
-      # GET → parallel (pytest-xdist)  |  non-GET → sequential
-      echo " xuserrest: hybrid execution (parallel GET + sequential write)"
-
+      echo "  xuserrest: hybrid (parallel GET + sequential write)"
       HAS_GET=$(pytest --collect-only -q "$service_path" 2>/dev/null \
                   | grep -i "\bget\b" || true)
 
@@ -376,7 +389,7 @@ else
       esac
 
     else
-      echo " $service_name → sequential pytest"
+      echo "  $service_name → sequential"
       case "$REPORT_MODE" in
         none)
           run_pytest -vs "$service_path"
@@ -394,14 +407,12 @@ else
   done
 fi
 
-# ==============================================================================
 # CLEANUP
-# ==============================================================================
 
 if [ "$CLEAN" = true ]; then
   cd "$RANGER_DOCKER_PATH"
-  echo ":broom: Tearing down: $COMPOSE_CMD down"
-  eval "$COMPOSE_CMD down"
+  echo " Tearing down: $COMPOSE_CMD down"
+  $COMPOSE_CMD down
 fi
 
-echo ":white_check_mark: Execution complete"
+echo " Execution complete"
